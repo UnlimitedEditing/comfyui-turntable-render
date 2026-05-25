@@ -1,0 +1,2 @@
+pyrender>=0.1.45
+trimesh[easy]>=3.0
