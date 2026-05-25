@@ -16,10 +16,16 @@ import math
 import os
 
 import numpy as np
-import pyrender
 import torch
 import trimesh
 from PIL import Image as PILImage
+
+# pyrender is intentionally NOT imported here at module level.
+# Importing it at ComfyUI startup triggers EGL/CUDA-GL context initialisation
+# which pre-allocates GPU VRAM before any workflow node has run, competing with
+# the Hunyuan3D geometry and paint models.  Instead, each function that needs
+# pyrender imports it lazily so the EGL context is only created when the
+# TurntableRenderNode actually executes (last in the graph).
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +42,7 @@ def _load_scene_and_bounds(model_path: str):
     center : np.ndarray [3]  (centroid of bounding box)
     radius : float           (half of the longest bounding-box dimension)
     """
+    import pyrender  # lazy: keeps EGL off the GPU until this node runs
     loaded = trimesh.load(model_path)
 
     if isinstance(loaded, trimesh.Scene):
@@ -105,7 +112,7 @@ def _look_at_pose(eye: np.ndarray, target: np.ndarray) -> np.ndarray:
     return pose
 
 
-def _render_one(scene: pyrender.Scene,
+def _render_one(scene,
                 center: np.ndarray,
                 radius: float,
                 az_deg: float,
@@ -130,6 +137,7 @@ def _render_one(scene: pyrender.Scene,
     -------
     RGBA uint8 array of shape (H, W, 4)
     """
+    import pyrender  # lazy: keeps EGL off the GPU until this node runs
     dist = radius * camera_dist
     az   = math.radians(az_deg)
     el   = math.radians(el_deg)
@@ -256,7 +264,7 @@ class TurntableRenderNode:
         }
 
     RETURN_TYPES  = ("IMAGE",)
-    RETURN_NAMES  = ("sprite_sheet",)
+    RETURN_NAMES  = ("frames",)
     FUNCTION      = "render"
     CATEGORY      = "3D/Sprite"
     OUTPUT_NODE   = False
@@ -291,19 +299,21 @@ class TurntableRenderNode:
                                fill_intensity=fill_intensity)
             frames.append(rgba)
 
-        # Stitch into one horizontal sheet
-        sheet = PILImage.new("RGBA", (frame_w * num_views, frame_h),
-                             (0, 0, 0, 0))
-        for i, f in enumerate(frames):
+        # Return as a batch of RGBA frames — shape (num_views, H, W, 4).
+        # ComfyUI SaveImage saves each frame as a separate file, so Graydient
+        # returns up to num_views individual PNGs with proper alpha transparency.
+        # forge.py receives these and stitches the cardinal sheet server-side.
+        frame_tensors = []
+        for f in frames:
             img = PILImage.fromarray(f, "RGBA")
             if img.size != (frame_w, frame_h):
                 img = img.resize((frame_w, frame_h), PILImage.LANCZOS)
-            sheet.paste(img, (i * frame_w, 0))
+            rgba = np.array(img).astype(np.float32) / 255.0   # (H, W, 4)
+            frame_tensors.append(torch.from_numpy(rgba))
 
-        # ComfyUI IMAGE format: float32 [0,1], shape (1, H, total_W, 3)
-        rgb = np.array(sheet.convert("RGB")).astype(np.float32) / 255.0
-        tensor = torch.from_numpy(rgb).unsqueeze(0)
-        return (tensor,)
+        # Stack into (num_views, H, W, 4)
+        batch = torch.stack(frame_tensors, dim=0)
+        return (batch,)
 
 
 # ---------------------------------------------------------------------------
