@@ -266,6 +266,15 @@ class TurntableRenderNode:
     def render(self, model_path, num_views, start_azimuth, elevation_deg,
                camera_dist, fov_deg, frame_w, frame_h,
                key_intensity, fill_intensity):
+        # Hy3DExportMesh outputs a relative path (e.g. "3d/hy3d_mesh_00001_.glb").
+        # Resolve it against ComfyUI's output directory if it isn't absolute.
+        if not os.path.isabs(model_path):
+            try:
+                import folder_paths
+                model_path = os.path.join(folder_paths.get_output_directory(), model_path)
+            except ImportError:
+                pass
+
         if not os.path.isfile(model_path):
             raise FileNotFoundError(
                 f"[TurntableRenderNode] model not found: {model_path}"
