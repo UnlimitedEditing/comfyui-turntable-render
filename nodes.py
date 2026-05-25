@@ -161,15 +161,13 @@ def _render_one(scene: pyrender.Scene,
     except Exception as egl_err:
         import os as _os
         if _os.environ.get("PYOPENGL_PLATFORM") != "osmesa":
-            import sys
+            import sys, importlib
             print(f"[turntable] EGL failed ({egl_err}), retrying with osmesa", file=sys.stderr)
             _os.environ["PYOPENGL_PLATFORM"] = "osmesa"
-            # Re-import pyrender so it picks up the new platform
-            import importlib, pyrender as _pr
-            importlib.reload(_pr)
-            import pyrender as pyrender  # noqa: F811
-            renderer = pyrender.OffscreenRenderer(W, H)
-            color, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
+            import pyrender as _pr_reload
+            importlib.reload(_pr_reload)
+            renderer = _pr_reload.OffscreenRenderer(W, H)
+            color, _ = renderer.render(scene, flags=_pr_reload.RenderFlags.RGBA)
             renderer.delete()
         else:
             raise
